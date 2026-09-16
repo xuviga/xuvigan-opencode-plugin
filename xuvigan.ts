@@ -1,13 +1,8 @@
 /**
  * XuViGaN — единственный плагин который нужен
  *
- * Решает три боли:
- * 1. Нет памяти между сессиями → факты, предпочтения, паттерны
- * 2. Галлюцинации → проверка файлов и импортов
- * 3. Деструктивные операции → warn вместо block
- * 4. Повторяющиеся ошибки → база ошибок и решений
- *
- * Без лишнего: без GO-запросов, без over-guard, без спама.
+ * Memory + Errors + Verify + Guard в одном файле
+ * Без GO-запросов, без over-guard, без спама.
  */
 
 import type { Plugin } from "@opencode-ai/plugin"
@@ -40,20 +35,13 @@ interface ErrorEntry {
   timestamp: number
 }
 
-interface Store {
-  memory: MemoryEntry[]
-  errors: ErrorEntry[]
-}
-
-type LogLevel = "debug" | "info" | "error" | "warn"
-
 const STORE_LIMIT = 200
 
 function getPath(dir: string, file: string): string {
   return join(dir, ".opencode", file)
 }
 
-function loadStore(dir: string, file: string, def: any): any {
+function loadStore<T>(dir: string, file: string, def: T): T {
   const p = getPath(dir, file)
   if (!existsSync(p)) return def
   try {
@@ -63,7 +51,7 @@ function loadStore(dir: string, file: string, def: any): any {
   }
 }
 
-function saveStore(dir: string, file: string, data: any): void {
+function saveStore(dir: string, file: string, data: unknown): void {
   const p = getPath(dir, file)
   const d = join(dir, ".opencode")
   if (!existsSync(d)) mkdirSync(d, { recursive: true })
@@ -74,17 +62,28 @@ function saveStore(dir: string, file: string, data: any): void {
 // MEMORY
 // ===========================
 
-function memLoad(dir: string) {
+interface MemoryStore {
+  entries: MemoryEntry[]
+}
+
+function memLoad(dir: string): MemoryStore {
   return loadStore(dir, "memory.json", { entries: [] })
 }
-function memSave(dir: string, data: any) {
+
+function memSave(dir: string, data: MemoryStore): void {
   saveStore(dir, "memory.json", data)
 }
 
 function memAdd(dir: string, entry: Omit<MemoryEntry, "id" | "timestamp">) {
   const store = memLoad(dir)
-  store.entries.push({ ...entry, id: `m-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, timestamp: Date.now() })
-  if (store.entries.length > STORE_LIMIT) store.entries = store.entries.slice(-STORE_LIMIT)
+  store.entries.push({
+    ...entry,
+    id: `m-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+    timestamp: Date.now(),
+  })
+  if (store.entries.length > STORE_LIMIT) {
+    store.entries = store.entries.slice(-STORE_LIMIT)
+  }
   memSave(dir, store)
 }
 
@@ -92,15 +91,17 @@ function memSearch(dir: string, q: string): MemoryEntry[] {
   const store = memLoad(dir)
   const now = Date.now()
   const lower = q.toLowerCase()
-  return (store.entries as MemoryEntry[])
-    .filter((e: MemoryEntry) => !e.ttl || now - e.timestamp < e.ttl)
-    .filter((e: MemoryEntry) => e.content.toLowerCase().includes(lower) || e.tags.some((t: string) => t.toLowerCase().includes(lower)))
+  return store.entries
+    .filter((e) => !e.ttl || now - e.timestamp < e.ttl)
+    .filter((e) => e.content.toLowerCase().includes(lower) || e.tags.some((t) => t.toLowerCase().includes(lower)))
 }
 
 function memFormat(entries: MemoryEntry[]): string {
   if (!entries.length) return ""
   const g: Record<string, MemoryEntry[]> = {}
-  for (const e of entries) { (g[e.type] ??= []).push(e) }
+  for (const e of entries) {
+    ;(g[e.type] ??= []).push(e)
+  }
   let out = "\n## Persistent Memory\n"
   for (const [type, list] of Object.entries(g)) {
     out += `\n### ${type.charAt(0).toUpperCase() + type.slice(1)}\n`
@@ -120,13 +121,18 @@ interface ErrorStore {
 function errLoad(dir: string): ErrorStore {
   return loadStore(dir, "errors.json", { errors: [] })
 }
-function errSave(dir: string, data: ErrorStore) {
+
+function errSave(dir: string, data: ErrorStore): void {
   saveStore(dir, "errors.json", data)
 }
 
 function findErrMatch(content: string, store: ErrorStore): ErrorEntry | undefined {
-  return store.errors.find((e: ErrorEntry) => {
-    try { return new RegExp(e.pattern, "i").test(content) } catch { return content.toLowerCase().includes(e.pattern.toLowerCase()) }
+  return store.errors.find((e) => {
+    try {
+      return new RegExp(e.pattern, "i").test(content)
+    } catch {
+      return content.toLowerCase().includes(e.pattern.toLowerCase())
+    }
   })
 }
 
@@ -136,8 +142,13 @@ function findErrMatch(content: string, store: ErrorStore): ErrorEntry | undefine
 
 function extractImports(code: string): string[] {
   const out: string[] = []
-  for (const p of [/from\s+['"]([^'"]+)['"]/g, /import\s+['"]([^'"]+)['"]/g, /require\s*\(\s*['"]([^'"]+)['"]\s*\)/g]) {
-    let m; while ((m = p.exec(code)) !== null) out.push(m[1])
+  for (const p of [
+    /from\s+['"]([^'"]+)['"]/g,
+    /import\s+['"]([^'"]+)['"]/g,
+    /require\s*\(\s*['"]([^'"]+)['"]\s*\)/g,
+  ]) {
+    let m
+    while ((m = p.exec(code)) !== null) out.push(m[1])
   }
   return out
 }
@@ -145,7 +156,6 @@ function extractImports(code: string): string[] {
 function verifyPathExists(path: string, baseDir: string): boolean {
   if (path.startsWith("node:")) return true
   if (!path.startsWith(".") && !path.startsWith("/")) {
-    // npm package
     const parts = path.split("/")
     const pkg = parts[0].startsWith("@") ? `${parts[0]}/${parts[1]}` : parts[0]
     return existsSync(join(baseDir, "node_modules", pkg))
@@ -184,7 +194,7 @@ function verifyCode(code: string, filePath: string, baseDir: string): VerifyResu
 }
 
 // ===========================
-// GUARD (warn, not block)
+// GUARD
 // ===========================
 
 const GUARD_WARN: Array<{ pattern: RegExp; reason: string; suggestion?: string }> = [
@@ -210,87 +220,90 @@ function checkGuard(content: string): string[] {
 }
 
 // ===========================
-// MAIN PLUGIN
+// TOOL HELPERS
 // ===========================
 
-export const XuViGaNPlugin: Plugin = async ({ directory, client }) => {
+import { tool } from "@opencode-ai/plugin"
 
-  function log(level: LogLevel, message: string, extra?: any) {
-    client.app.log({ body: { service: "xuvigan", level, message, extra } }).catch(() => {})
+// ===========================
+// PLUGIN DEFINITION
+// ===========================
+
+export const XuViGaNPlugin: Plugin = async ({ project, client, directory }) => {
+  function log(level: "debug" | "info" | "error" | "warn", message: string) {
+    try {
+      client.app.log({ body: { service: "xuvigan", level, message } }).catch(() => {})
+    } catch {}
   }
 
   return {
-    // Auto-inject memory on session start (minimal — just one reminder of key facts)
-    event: async ({ event }: any) => {
+    // ---- AUTO-INJECT MEMORY ON SESSION START ----
+    event: async ({ event }: { event: { type: string; properties?: Record<string, unknown> } }) => {
       if (event.type === "session.created") {
         const mem = memLoad(directory)
-        // Only inject preferences and blockers — not every pattern
-        const useful = (mem.entries as MemoryEntry[]).filter((e: MemoryEntry) => e.type === "preference" || e.type === "blocker")
+        const useful = mem.entries.filter((e) => e.type === "preference" || e.type === "blocker")
         if (useful.length > 0) {
-          const txt = "\n## Reminder\n" + useful.map((e: MemoryEntry) => `- ${e.content}`).join("\n") + "\n"
-          await client.session.prompt({
-            path: { id: event.properties.sessionID as string },
-            body: { noReply: true, parts: [{ type: "text", text: txt }] },
-          }).catch(() => {})
-        }
-      }
-    },
-
-    // After tool execution — check for errors, warn about issues
-    "tool.execute.after": async (input: any, output: any) => {
-      // Bash errors — check known patterns
-      if (input.tool === "bash") {
-        const out = (output.result || output.stdout || output.error || "") as string
-        if (!out) return
-
-        // Known error match?
-        const store = errLoad(directory)
-        const match = findErrMatch(out, store)
-        if (match && !match.resolved) {
-          match.count++
-          errSave(directory, store)
-          log("warn", `Known error #${match.count}: ${match.description}`, { solution: match.solution })
-        }
-      }
-
-      // Write/edit — verify code, count sensitive files
-      if ((input.tool === "write" || input.tool === "edit")) {
-        const filePath = (input.args?.filePath || input.args?.path || "") as string
-        if (!filePath) return
-
-        // Warn if sensitive
-        if (checkSensitive(filePath)) {
-          log("warn", `Sensitive file written: ${filePath}`, {})
-        }
-
-        // Verify code files (non-blocking)
-        if (/\.(ts|tsx|js|jsx|mjs)$/.test(filePath)) {
+          const txt = "\n## Reminder\n" + useful.map((e) => `- ${e.content}`).join("\n") + "\n"
           try {
-            const full = join(directory, filePath)
-            const content = readFileSync(full, "utf-8")
-            const v = verifyCode(content, filePath, directory)
-            if (!v.valid) {
-              log("warn", `${filePath}: import issues`, { issues: v.issues })
+            const sessionID = event.properties?.sessionID as string
+            if (sessionID) {
+              await client.session.prompt({
+                path: { id: sessionID },
+                body: { noReply: true, parts: [{ type: "text", text: txt }] },
+              })
             }
           } catch {}
         }
       }
     },
 
-    // Before tool execution — only warn, don't block
+    // ---- AFTER TOOL EXECUTION ----
+    "tool.execute.after": async (input: any, output: any) => {
+      if (input.tool === "bash") {
+        const out = (output.result || output.stdout || output.error || "") as string
+        if (!out) return
+
+        const store = errLoad(directory)
+        const match = findErrMatch(out, store)
+        if (match && !match.resolved) {
+          match.count++
+          errSave(directory, store)
+          log("warn", `Known error #${match.count}: ${match.description}. Solution: ${match.solution}`)
+        }
+      }
+
+      if ((input.tool === "write" || input.tool === "edit")) {
+        const filePath = (input.args?.filePath || input.args?.path || "") as string
+        if (!filePath) return
+
+        if (checkSensitive(filePath)) {
+          log("warn", `Sensitive file written: ${filePath}`)
+        }
+
+        if (/\.(ts|tsx|js|jsx|mjs)$/.test(filePath)) {
+          try {
+            const full = join(directory, filePath)
+            const content = readFileSync(full, "utf-8")
+            const v = verifyCode(content, filePath, directory)
+            if (!v.valid) {
+              log("warn", `${filePath}: ${v.issues.join("; ")}`)
+            }
+          } catch {}
+        }
+      }
+    },
+
+    // ---- BEFORE TOOL EXECUTION (warn, never block) ----
     "tool.execute.before": async (input: any, output: any) => {
-      // Guard check: dangerous commands — warn, let user decide
       if (input.tool === "bash") {
         const cmd = (input.args?.command || "") as string
         const issues = checkGuard(cmd)
         if (issues.length > 0) {
-          // Prepend warning to output
           output.args = output.args || {}
           output.args.__guard_warning = issues.join(" | ")
         }
       }
 
-      // Write check: sensitive files — warn
       if (input.tool === "write" || input.tool === "edit") {
         const filePath = (input.args?.filePath || input.args?.path || "") as string
         if (checkSensitive(filePath)) {
@@ -300,115 +313,121 @@ export const XuViGaNPlugin: Plugin = async ({ directory, client }) => {
       }
     },
 
-    // ---- TOOLS ----
+    // ---- CUSTOM TOOLS ----
     tool: {
-      // Memory
-      memory_remember: {
+      memory_remember: tool({
         description: "Save a fact to persistent memory. Types: preference, decision, pattern, blocker",
         args: {
-          content: String,
-          type: String,           // preference | decision | pattern | blocker
-          tags: String,           // comma-separated
-          ttl: Number,            // ms, 0 = permanent
+          content: tool.schema.string(),
+          type: tool.schema.string(),
+          tags: tool.schema.string(),
+          ttl: tool.schema.number(),
         },
-        execute: async (args: any, ctx: any) => {
-          memAdd(ctx.directory, {
+        execute: async (args, { worktree }) => {
+          memAdd(worktree, {
             type: args.type as MemoryEntry["type"],
             content: args.content,
             source: "agent",
-            tags: (args.tags || "").split(",").map((t: string) => t.trim()).filter(Boolean),
+            tags: (args.tags || "").split(",").map((t) => t.trim()).filter(Boolean),
             ttl: args.ttl || undefined,
           })
           return `Remembered: ${args.content}`
         },
-        output: String,
-      } as any,
+      }),
 
-      memory_search: {
+      memory_search: tool({
         description: "Search persistent memory",
-        args: { query: String },
-        execute: async (args: any, ctx: any) => {
-          const results = memSearch(ctx.directory, args.query)
+        args: { query: tool.schema.string() },
+        execute: async (args, { worktree }) => {
+          const results = memSearch(worktree, args.query)
           if (!results.length) return "No matching memories"
-          return results.map((e) => `[${e.type}] ${e.content} (tags: ${e.tags.join(",") || "-"})`).join("\n")
+          return results
+            .map((e) => `[${e.type}] ${e.content} (tags: ${e.tags.join(",") || "-"})`)
+            .join("\n")
         },
-        output: String,
-      } as any,
+      }),
 
-      memory_forget: {
+      memory_forget: tool({
         description: "Remove memories matching query",
-        args: { query: String },
-        execute: async (args: any, ctx: any) => {
-          const store = memLoad(ctx.directory)
+        args: { query: tool.schema.string() },
+        execute: async (args, { worktree }) => {
+          const store = memLoad(worktree)
           const before = store.entries.length
-          store.entries = store.entries.filter((e: MemoryEntry) => !e.content.toLowerCase().includes(args.query.toLowerCase()))
-          memSave(ctx.directory, store)
+          store.entries = store.entries.filter(
+            (e) => !e.content.toLowerCase().includes(args.query.toLowerCase())
+          )
+          memSave(worktree, store)
           return `Removed ${before - store.entries.length} entries`
         },
-        output: String,
-      } as any,
+      }),
 
-      // Errors
-      error_check: {
+      error_check: tool({
         description: "Check if a command/output matches a known error pattern",
-        args: { content: String },
-        execute: async (args: any, ctx: any) => {
-          const store = errLoad(ctx.directory)
+        args: { content: tool.schema.string() },
+        execute: async (args, { worktree }) => {
+          const store = errLoad(worktree)
           const match = findErrMatch(args.content, store)
           if (!match) return "No known error pattern"
           return `[${match.resolved ? "RESOLVED" : "UNRESOLVED"}] ${match.description}\nSolution: ${match.solution}\nSeen: ${match.count}x`
         },
-        output: String,
-      } as any,
+      }),
 
-      error_log: {
+      error_log: tool({
         description: "Log an error with its solution for future reference",
-        args: { pattern: String, description: String, solution: String, tags: String },
-        execute: async (args: any, ctx: any) => {
-          const store = errLoad(ctx.directory)
-          const tags = (args.tags || "").split(",").map((t: string) => t.trim()).filter(Boolean)
+        args: {
+          pattern: tool.schema.string(),
+          description: tool.schema.string(),
+          solution: tool.schema.string(),
+          tags: tool.schema.string(),
+        },
+        execute: async (args, { worktree }) => {
+          const store = errLoad(worktree)
+          const tags = (args.tags || "").split(",").map((t) => t.trim()).filter(Boolean)
           const existing = store.errors.find((e) => e.pattern.toLowerCase() === args.pattern.toLowerCase())
           if (existing) {
             existing.count++
             existing.resolved = false
             existing.timestamp = Date.now()
-            errSave(ctx.directory, store)
+            errSave(worktree, store)
             return `Updated: ${args.description} (x${existing.count})`
           }
           store.errors.push({
             id: `e-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
-            ...args, count: 1, resolved: false, tags, timestamp: Date.now(),
-          })
+            ...args,
+            count: 1,
+            resolved: false,
+            tags,
+            timestamp: Date.now(),
+          } as ErrorEntry)
           if (store.errors.length > STORE_LIMIT) store.errors = store.errors.slice(-STORE_LIMIT)
-          errSave(ctx.directory, store)
+          errSave(worktree, store)
           return `Logged: ${args.description}`
         },
-        output: String,
-      } as any,
+      }),
 
-      error_resolve: {
+      error_resolve: tool({
         description: "Mark an error pattern as resolved",
-        args: { id: String },
-        execute: async (args: any, ctx: any) => {
-          const store = errLoad(ctx.directory)
+        args: { id: tool.schema.string() },
+        execute: async (args, { worktree }) => {
+          const store = errLoad(worktree)
           const e = store.errors.find((x) => x.id === args.id)
           if (!e) return `Error ${args.id} not found`
           e.resolved = true
-          errSave(ctx.directory, store)
+          errSave(worktree, store)
           return `Resolved: ${e.description}`
         },
-        output: String,
-      } as any,
+      }),
 
-      // Verify
-      verify_check: {
-        description: "Verify that recent edits (code files) don't reference non-existent imports",
-        args: {},
-        execute: async (_args: any, ctx: any) => {
-          // Find recently modified .ts files
+      verify_check: tool({
+        description: "Run TypeScript check on the project",
+        args: { path: tool.schema.string() },
+        execute: async (args, { worktree }) => {
+          const target = args.path || worktree
           try {
             const result = execSync("npx tsc --noEmit --skipLibCheck 2>&1", {
-              cwd: ctx.directory, encoding: "utf-8", timeout: 20000,
+              cwd: target,
+              encoding: "utf-8",
+              timeout: 20000,
             })
             return result.includes("error TS")
               ? `Errors found:\n${result.slice(0, 2000)}`
@@ -417,53 +436,51 @@ export const XuViGaNPlugin: Plugin = async ({ directory, client }) => {
             return `Check failed: ${e.message}`
           }
         },
-        output: String,
-      } as any,
+      }),
 
-      verify_file: {
+      verify_file: tool({
         description: "Verify that a file exists and is accessible",
-        args: { path: String },
-        execute: async (args: any, ctx: any) => {
-          const fileName = args.path || args.filePath || ""
+        args: { path: tool.schema.string() },
+        execute: async (args, { worktree }) => {
+          const fileName = args.path || ""
           if (!fileName) return "Error: no path provided"
-          const full = join(ctx.directory, fileName)
+          const full = join(worktree, fileName)
           if (!existsSync(full)) return `NOT FOUND: ${fileName}`
           const c = readFileSync(full, "utf-8")
           return `File: ${fileName} (${c.length}b, ${c.split("\n").length} lines)`
         },
-        output: String,
-      } as any,
+      }),
 
-      verify_imports: {
+      verify_imports: tool({
         description: "Verify all imports in a file resolve correctly",
-        args: { path: String },
-        execute: async (args: any, ctx: any) => {
-          const fileName = args.path || args.filePath || ""
+        args: { path: tool.schema.string() },
+        execute: async (args, { worktree }) => {
+          const fileName = args.path || ""
           if (!fileName) return "Error: no path provided"
-          const full = join(ctx.directory, fileName)
+          const full = join(worktree, fileName)
           if (!existsSync(full)) return `File not found: ${fileName}`
           const content = readFileSync(full, "utf-8")
-          const v = verifyCode(content, fileName, ctx.directory)
+          const v = verifyCode(content, fileName, worktree)
           if (v.valid && v.warnings.length === 0) return `All imports OK in ${fileName}`
           let out = ""
           if (v.issues.length) out += `Issues:\n${v.issues.map((i) => `  ❌ ${i}`).join("\n")}\n`
           if (v.warnings.length) out += `Warnings:\n${v.warnings.map((w) => `  ⚠️ ${w}`).join("\n")}\n`
           return out
         },
-        output: String,
-      } as any,
+      }),
 
-      // Guard
-      guard_scan: {
+      guard_scan: tool({
         description: "Scan a command or code for dangerous patterns",
-        args: { content: String },
-        execute: async (args: any, _ctx: any) => {
+        args: { content: tool.schema.string() },
+        execute: async (args) => {
           const issues = checkGuard(args.content)
           if (!issues.length) return "No dangerous patterns detected"
           return "Found issues:\n" + issues.map((i) => `  - ${i}`).join("\n")
         },
-        output: String,
-      } as any,
+      }),
     },
   }
 }
+
+// Also export as default for compatibility
+export default XuViGaNPlugin
