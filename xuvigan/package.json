@@ -1,0 +1,7 @@
+{
+  "name": "xuvigan",
+  "version": "1.0.0",
+  "description": "XuViGaN plugin for OpenCode — memory, errors, verify, guard",
+  "type": "module",
+  "main": "xuvigan.ts"
+}
