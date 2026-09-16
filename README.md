@@ -20,7 +20,7 @@
 
 ## Что внутри
 
-Один файл `xuvigan.ts`. Четыре естественных механизма которые срабатывают сами и не требуют ритуалов.
+Один файл `xuvigan/index.ts`. Четыре естественных механизма которые срабатывают сами и не требуют ритуалов.
 
 **Память.** Сессия за session — агент начинает с нуля. Это ненормально. Инъекция контекста это часть решения. Но полное решение — когда агент сам понимает что записал и где это взять. Утром написал в `.opencode/memory.json`. Вечером зашёл — нашёл. Не благодаря магии. Благодаря тому что данные там и они похожи на правду которую он сам написал.
 
@@ -51,14 +51,43 @@
 
 ```bash
 cd ~/.config/opencode/plugins
-git clone https://github.com/xuviga/xuvigan-opencode-plugin
-cd xuvigan-opencode-plugin
-bun install
+git clone https://github.com/xuviga/xuvigan-opencode-plugin xuvigan
 ```
 
-Или просто скопируй `xuvigan.ts` в `~/.config/opencode/plugins/`.
+Добавь в `opencode.json`:
+
+```json
+{
+  "plugin": ["file://~/.config/opencode/plugins/xuvigan"]
+}
+```
+
+Или скопируй `xuvigan/` в `~/.config/opencode/plugins/` и добавь `plugin: ["~/.config/opencode/plugins/xuvigan"]` в конфиг.
 
 Всё. Больше ничего делать не нужно.
+
+—
+
+## Как использовать
+
+Автоматически:
+- Session start → напоминает preferences/blockers
+- Bash output → ищет известные ошибки
+- Write .ts/.js → проверяет импорты
+- Bash dangerous → warn (не блокирует)
+- Write sensitive → warn (не блокирует)
+
+Инструменты:
+- `memory_remember` — запомнить факт
+- `memory_search` — найти в памяти
+- `memory_forget` — забыть
+- `error_check` — проверить ошибку
+- `error_log` — записать ошибку
+- `error_resolve` — пометить решённой
+- `verify_check` — TypeScript check
+- `verify_file` — проверить файл
+- `verify_imports` — проверить импорты
+- `guard_scan` — проверить команду
 
 —
 
