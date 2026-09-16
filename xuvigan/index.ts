@@ -1,11 +1,12 @@
 /**
  * XuViGaN — единственный плагин который нужен
  *
- * Memory + Errors + Verify + Guard в одном файле
- * Без GO-запросов, без over-guard, без спама.
+ * Memory + Errors + Verify + Guard
+ * Автоматически: инъекция памяти, проверка ошибок, warn при опасных командах
  */
 
 import type { Plugin } from "@opencode-ai/plugin"
+import { tool } from "@opencode-ai/plugin"
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs"
 import { join, dirname } from "node:path"
 import { execSync } from "node:child_process"
@@ -16,9 +17,9 @@ import { execSync } from "node:child_process"
 
 interface MemoryEntry {
   id: string
-  type: "preference" | "decision" | "pattern" | "blocker"
+  type: string
   content: string
-  source: "agent" | "user" | "auto"
+  source: string
   timestamp: number
   ttl?: number
   tags: string[]
@@ -33,6 +34,14 @@ interface ErrorEntry {
   resolved: boolean
   tags: string[]
   timestamp: number
+}
+
+interface MemoryStore {
+  entries: MemoryEntry[]
+}
+
+interface ErrorStore {
+  errors: ErrorEntry[]
 }
 
 const STORE_LIMIT = 200
@@ -61,10 +70,6 @@ function saveStore(dir: string, file: string, data: unknown): void {
 // ===========================
 // MEMORY
 // ===========================
-
-interface MemoryStore {
-  entries: MemoryEntry[]
-}
 
 function memLoad(dir: string): MemoryStore {
   return loadStore(dir, "memory.json", { entries: [] })
@@ -113,10 +118,6 @@ function memFormat(entries: MemoryEntry[]): string {
 // ===========================
 // ERRORS
 // ===========================
-
-interface ErrorStore {
-  errors: ErrorEntry[]
-}
 
 function errLoad(dir: string): ErrorStore {
   return loadStore(dir, "errors.json", { errors: [] })
@@ -220,13 +221,7 @@ function checkGuard(content: string): string[] {
 }
 
 // ===========================
-// TOOL HELPERS
-// ===========================
-
-import { tool } from "@opencode-ai/plugin"
-
-// ===========================
-// PLUGIN DEFINITION
+// PLUGIN
 // ===========================
 
 export const XuViGaNPlugin: Plugin = async ({ project, client, directory }) => {
@@ -237,7 +232,7 @@ export const XuViGaNPlugin: Plugin = async ({ project, client, directory }) => {
   }
 
   return {
-    // ---- AUTO-INJECT MEMORY ON SESSION START ----
+    // Auto-inject memory on session start
     event: async ({ event }: { event: { type: string; properties?: Record<string, unknown> } }) => {
       if (event.type === "session.created") {
         const mem = memLoad(directory)
@@ -257,7 +252,7 @@ export const XuViGaNPlugin: Plugin = async ({ project, client, directory }) => {
       }
     },
 
-    // ---- AFTER TOOL EXECUTION ----
+    // After tool execution
     "tool.execute.after": async (input: any, output: any) => {
       if (input.tool === "bash") {
         const out = (output.result || output.stdout || output.error || "") as string
@@ -293,7 +288,7 @@ export const XuViGaNPlugin: Plugin = async ({ project, client, directory }) => {
       }
     },
 
-    // ---- BEFORE TOOL EXECUTION (warn, never block) ----
+    // Before tool execution
     "tool.execute.before": async (input: any, output: any) => {
       if (input.tool === "bash") {
         const cmd = (input.args?.command || "") as string
@@ -313,19 +308,19 @@ export const XuViGaNPlugin: Plugin = async ({ project, client, directory }) => {
       }
     },
 
-    // ---- CUSTOM TOOLS ----
+    // Custom tools
     tool: {
       memory_remember: tool({
-        description: "Save a fact to persistent memory. Types: preference, decision, pattern, blocker",
+        description: "Save a fact to persistent memory",
         args: {
-          content: tool.schema.string(),
-          type: tool.schema.string(),
-          tags: tool.schema.string(),
-          ttl: tool.schema.number(),
+          content: tool.schema.string().describe("The fact to remember"),
+          type: tool.schema.string().describe("Type: preference, decision, pattern, blocker"),
+          tags: tool.schema.string().describe("Comma-separated tags"),
+          ttl: tool.schema.number().describe("Time to live in ms, 0 = permanent"),
         },
         execute: async (args, { worktree }) => {
           memAdd(worktree, {
-            type: args.type as MemoryEntry["type"],
+            type: args.type,
             content: args.content,
             source: "agent",
             tags: (args.tags || "").split(",").map((t) => t.trim()).filter(Boolean),
@@ -337,7 +332,7 @@ export const XuViGaNPlugin: Plugin = async ({ project, client, directory }) => {
 
       memory_search: tool({
         description: "Search persistent memory",
-        args: { query: tool.schema.string() },
+        args: { query: tool.schema.string().describe("Search query") },
         execute: async (args, { worktree }) => {
           const results = memSearch(worktree, args.query)
           if (!results.length) return "No matching memories"
@@ -349,7 +344,7 @@ export const XuViGaNPlugin: Plugin = async ({ project, client, directory }) => {
 
       memory_forget: tool({
         description: "Remove memories matching query",
-        args: { query: tool.schema.string() },
+        args: { query: tool.schema.string().describe("Query to remove") },
         execute: async (args, { worktree }) => {
           const store = memLoad(worktree)
           const before = store.entries.length
@@ -363,7 +358,7 @@ export const XuViGaNPlugin: Plugin = async ({ project, client, directory }) => {
 
       error_check: tool({
         description: "Check if a command/output matches a known error pattern",
-        args: { content: tool.schema.string() },
+        args: { content: tool.schema.string().describe("Error text to check") },
         execute: async (args, { worktree }) => {
           const store = errLoad(worktree)
           const match = findErrMatch(args.content, store)
@@ -373,12 +368,12 @@ export const XuViGaNPlugin: Plugin = async ({ project, client, directory }) => {
       }),
 
       error_log: tool({
-        description: "Log an error with its solution for future reference",
+        description: "Log an error with its solution",
         args: {
-          pattern: tool.schema.string(),
-          description: tool.schema.string(),
-          solution: tool.schema.string(),
-          tags: tool.schema.string(),
+          pattern: tool.schema.string().describe("Regex pattern to match"),
+          description: tool.schema.string().describe("Description of error"),
+          solution: tool.schema.string().describe("How to fix it"),
+          tags: tool.schema.string().describe("Comma-separated tags"),
         },
         execute: async (args, { worktree }) => {
           const store = errLoad(worktree)
@@ -406,8 +401,8 @@ export const XuViGaNPlugin: Plugin = async ({ project, client, directory }) => {
       }),
 
       error_resolve: tool({
-        description: "Mark an error pattern as resolved",
-        args: { id: tool.schema.string() },
+        description: "Mark an error as resolved",
+        args: { id: tool.schema.string().describe("Error ID") },
         execute: async (args, { worktree }) => {
           const store = errLoad(worktree)
           const e = store.errors.find((x) => x.id === args.id)
@@ -419,8 +414,8 @@ export const XuViGaNPlugin: Plugin = async ({ project, client, directory }) => {
       }),
 
       verify_check: tool({
-        description: "Run TypeScript check on the project",
-        args: { path: tool.schema.string() },
+        description: "Run TypeScript check on project",
+        args: { path: tool.schema.string().describe("Optional path") },
         execute: async (args, { worktree }) => {
           const target = args.path || worktree
           try {
@@ -430,8 +425,8 @@ export const XuViGaNPlugin: Plugin = async ({ project, client, directory }) => {
               timeout: 20000,
             })
             return result.includes("error TS")
-              ? `Errors found:\n${result.slice(0, 2000)}`
-              : "TypeScript check passed."
+              ? `Errors:\n${result.slice(0, 2000)}`
+              : "TypeScript check passed"
           } catch (e: any) {
             return `Check failed: ${e.message}`
           }
@@ -439,8 +434,8 @@ export const XuViGaNPlugin: Plugin = async ({ project, client, directory }) => {
       }),
 
       verify_file: tool({
-        description: "Verify that a file exists and is accessible",
-        args: { path: tool.schema.string() },
+        description: "Verify that a file exists",
+        args: { path: tool.schema.string().describe("File path") },
         execute: async (args, { worktree }) => {
           const fileName = args.path || ""
           if (!fileName) return "Error: no path provided"
@@ -452,8 +447,8 @@ export const XuViGaNPlugin: Plugin = async ({ project, client, directory }) => {
       }),
 
       verify_imports: tool({
-        description: "Verify all imports in a file resolve correctly",
-        args: { path: tool.schema.string() },
+        description: "Verify all imports in a file",
+        args: { path: tool.schema.string().describe("File path") },
         execute: async (args, { worktree }) => {
           const fileName = args.path || ""
           if (!fileName) return "Error: no path provided"
@@ -470,8 +465,8 @@ export const XuViGaNPlugin: Plugin = async ({ project, client, directory }) => {
       }),
 
       guard_scan: tool({
-        description: "Scan a command or code for dangerous patterns",
-        args: { content: tool.schema.string() },
+        description: "Scan a command for dangerous patterns",
+        args: { content: tool.schema.string().describe("Command to scan") },
         execute: async (args) => {
           const issues = checkGuard(args.content)
           if (!issues.length) return "No dangerous patterns detected"
@@ -482,5 +477,4 @@ export const XuViGaNPlugin: Plugin = async ({ project, client, directory }) => {
   }
 }
 
-// Also export as default for compatibility
 export default XuViGaNPlugin
