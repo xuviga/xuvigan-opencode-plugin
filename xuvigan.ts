@@ -424,10 +424,12 @@ export const XuViGaNPlugin: Plugin = async ({ directory, client }) => {
         description: "Verify that a file exists and is accessible",
         args: { path: String },
         execute: async (args: any, ctx: any) => {
-          const full = join(ctx.directory, args.path)
-          if (!existsSync(full)) return `NOT FOUND: ${args.path}`
+          const fileName = args.path || args.filePath || ""
+          if (!fileName) return "Error: no path provided"
+          const full = join(ctx.directory, fileName)
+          if (!existsSync(full)) return `NOT FOUND: ${fileName}`
           const c = readFileSync(full, "utf-8")
-          return `File: ${args.path} (${c.length}b, ${c.split("\n").length} lines)`
+          return `File: ${fileName} (${c.length}b, ${c.split("\n").length} lines)`
         },
         output: String,
       } as any,
@@ -436,11 +438,13 @@ export const XuViGaNPlugin: Plugin = async ({ directory, client }) => {
         description: "Verify all imports in a file resolve correctly",
         args: { path: String },
         execute: async (args: any, ctx: any) => {
-          const full = join(ctx.directory, args.path)
-          if (!existsSync(full)) return `File not found: ${args.path}`
+          const fileName = args.path || args.filePath || ""
+          if (!fileName) return "Error: no path provided"
+          const full = join(ctx.directory, fileName)
+          if (!existsSync(full)) return `File not found: ${fileName}`
           const content = readFileSync(full, "utf-8")
-          const v = verifyCode(content, args.path, ctx.directory)
-          if (v.valid && v.warnings.length === 0) return `All imports OK in ${args.path}`
+          const v = verifyCode(content, fileName, ctx.directory)
+          if (v.valid && v.warnings.length === 0) return `All imports OK in ${fileName}`
           let out = ""
           if (v.issues.length) out += `Issues:\n${v.issues.map((i) => `  ❌ ${i}`).join("\n")}\n`
           if (v.warnings.length) out += `Warnings:\n${v.warnings.map((w) => `  ⚠️ ${w}`).join("\n")}\n`
