@@ -1,11 +1,10 @@
 /**
- * XuViGaN plugin — server entry point
+ * XuViGaN plugin — automatic hooks
  */
 
 import type { Plugin } from "@opencode-ai/plugin"
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from "node:fs"
 import { join } from "node:path"
-import { execSync } from "node:child_process"
 
 // ===========================
 // TYPES & STORAGE
@@ -134,8 +133,7 @@ function findErrMatch(content: string, store: ErrorStore): ErrorEntry | undefine
 
 export const id = "xuvigan"
 
-export async function server({ project, client, directory }: {
-  project: unknown
+export async function server({ client, directory }: {
   client: {
     app: {
       log: (opts: { body: { service: string; level: string; message: string; extra?: unknown } }) => Promise<void>
@@ -145,9 +143,6 @@ export async function server({ project, client, directory }: {
         path: { id: string }
         body: { noReply?: boolean; parts: Array<{ type: string; text: string }> }
       }) => Promise<unknown>
-    }
-    tui: {
-      showToast: (opts: { body: { message: string; variant?: string } }) => Promise<void>
     }
   }
   directory: string
