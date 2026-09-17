@@ -133,7 +133,13 @@ function findErrMatch(content: string, store: ErrorStore): ErrorEntry | undefine
 
 export const id = "xuvigan"
 
-export async function server({ client, directory }: {
+import { homedir } from "node:os"
+
+function getGlobalMemoryDir() {
+  return join(homedir(), ".config", "opencode", ".opencode")
+}
+
+export async function server({ client }: {
   client: {
     app: {
       log: (opts: { body: { service: string; level: string; message: string; extra?: unknown } }) => Promise<void>
@@ -145,7 +151,6 @@ export async function server({ client, directory }: {
       }) => Promise<unknown>
     }
   }
-  directory: string
 }) {
   function log(level: "debug" | "info" | "error" | "warn", message: string) {
     try {
@@ -156,10 +161,11 @@ export async function server({ client, directory }: {
   return {
     event: async ({ event }: { event: { type: string; properties?: Record<string, unknown> } }) => {
       if (event.type === "session.created") {
-        const mem = memLoad(directory)
-        const useful = mem.entries.filter((e) => e.type === "preference" || e.type === "blocker")
+        const memDir = getGlobalMemoryDir()
+        const mem = loadStore(memDir, "memory.json", { entries: [] })
+        const useful = mem.entries.filter((e: MemoryEntry) => e.type === "preference" || e.type === "blocker")
         if (useful.length > 0) {
-          const txt = "\n## Reminder\n" + useful.map((e) => `- ${e.content}`).join("\n") + "\n"
+          const txt = "\n## Reminder\n" + useful.map((e: MemoryEntry) => `- ${e.content}`).join("\n") + "\n"
           try {
             const sessionID = event.properties?.sessionID as string
             if (sessionID) {
@@ -178,11 +184,11 @@ export async function server({ client, directory }: {
         const out = (output.result || output.stdout || output.error || "") as string
         if (!out) return
 
-        const store = errLoad(directory)
+        const store = errLoad(getGlobalMemoryDir())
         const match = findErrMatch(out, store)
         if (match && !match.resolved) {
           match.count++
-          errSave(directory, store)
+          errSave(getGlobalMemoryDir(), store)
           log("warn", `Known error #${match.count}: ${match.description}. Solution: ${match.solution}`)
         }
       }
@@ -197,7 +203,7 @@ export async function server({ client, directory }: {
 
         if (/\.(ts|tsx|js|jsx|mjs)$/.test(filePath)) {
           try {
-            const full = join(directory, filePath)
+            const full = join(process.cwd(), filePath)
             const content = readFileSync(full, "utf-8")
             const imports: string[] = []
             for (const p of [
@@ -208,7 +214,7 @@ export async function server({ client, directory }: {
               let m
               while ((m = p.exec(content)) !== null) imports.push(m[1])
             }
-            const codeDir = join(directory, filePath.split("/").slice(0, -1).join("/"))
+            const codeDir = join(process.cwd(), filePath.split("/").slice(0, -1).join("/"))
             const issues: string[] = []
             for (const imp of imports) {
               if (imp.startsWith(".")) {
